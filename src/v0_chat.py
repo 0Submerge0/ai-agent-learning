@@ -34,7 +34,8 @@ def extract_text(data: dict) -> str:
 
 
 def chat(user_text: str) -> None:
-    api_key = os.environ.get("ARK_API_KEY")
+    # 有的环境里 key 会带尾随空格或换行（比如从文件里读出来），先清掉。
+    api_key = (os.environ.get("ARK_API_KEY") or "").strip()
     if not api_key:
         print("未找到 ARK_API_KEY 环境变量，请先设置后再运行。", file=sys.stderr)
         sys.exit(1)
@@ -51,9 +52,14 @@ def chat(user_text: str) -> None:
             json=build_payload(user_text),
             timeout=60,
         )
-    except requests.exceptions.RequestException as exc:
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
         print(f"网络请求失败：{exc}", file=sys.stderr)
         print("可能是网络超时或未连通，重跑一次通常就好。", file=sys.stderr)
+        sys.exit(1)
+    except requests.exceptions.RequestException as exc:
+        # 请求根本没发出去。异常信息里会带上 header 原值，也就是你的 key，所以要打码。
+        print("请求没有发出去：" + str(exc).replace(api_key, "***"), file=sys.stderr)
+        print("请检查 ARK_API_KEY 是否含空格或换行。", file=sys.stderr)
         sys.exit(1)
 
     # 不用 raise_for_status()：要看到服务端返回的 error.code，才知道错在哪。
@@ -62,7 +68,13 @@ def chat(user_text: str) -> None:
         print(resp.text, file=sys.stderr)
         sys.exit(1)
 
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError:
+        # 代理、企业网关、机场 WiFi 的认证页都会返回 200 + HTML。
+        print("接口返回的不是 JSON（可能是代理或网关的拦截页）：", file=sys.stderr)
+        print(resp.text[:200], file=sys.stderr)
+        sys.exit(1)
     text = extract_text(data)
     if text:
         print(text)
@@ -74,4 +86,5 @@ def chat(user_text: str) -> None:
 
 
 if __name__ == "__main__":
-    chat(sys.argv[1] if len(sys.argv) > 1 else DEFAULT_QUESTION)
+    # 拼回整句：不加引号时 argv 会被空格切成好几段，全拼起来才不丢字。
+    chat(" ".join(sys.argv[1:]) if len(sys.argv) > 1 else DEFAULT_QUESTION)
