@@ -131,8 +131,9 @@ def run_agent(question: str) -> None:
         data = call_model(messages, TOOLS)
         stop = data.get("stop_reason")
 
-        # 关键：assistant 的 content 必须原样回填，包括 thinking 块和它的 signature。
-        # 只挑 text 块塞回去，下一轮会失败。
+        # assistant 的 content 原样回填，包括 thinking 块和它的 signature。
+        # 实测 deepseek-v4-1-flash 把 thinking 块丢掉也能继续跑，但官方要求原样带回，
+        # 换模型（尤其豆包/Claude）时别赌这一点。
         messages.append({"role": "assistant", "content": data["content"]})
 
         if stop == "tool_use":
