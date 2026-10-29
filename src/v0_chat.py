@@ -11,7 +11,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 API_URL = "https://ark.cn-beijing.volces.com/api/coding/v1/messages"
-MODEL = "doubao-seed-2-1-pro"
+MODEL = "deepseek-v4-1-flash-260910"
 SYSTEM_PROMPT = "你是一个简洁的中文助手，回答控制在三句话以内。"
 MAX_TOKENS = 512
 DEFAULT_QUESTION = "用一句话介绍你自己"
