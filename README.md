@@ -11,13 +11,15 @@
 
 ## 它现在能做什么
 
-到 V3 为止，它是一个**能聊天、能记事、能整理文件**的命令行助手：
+到 V4 为止，它是一个**能聊天、能记事、能整理文件、能自己安排步骤**的命令行助手：
 
 - 多轮对话，记得你之前说过什么（`/clear` 可清空记忆）
 - 自己决定要不要调用工具、调哪个、传什么参数
-- 能列目录、读文件、建目录、移动文件
+- 能列目录、读文件、建目录、移动文件、按模式搜文件、写文本文件
+- 处理任务时先勘察、再说计划、再执行、最后复查
 - **只能操作 `workspace/` 目录**，越界直接拒绝
 - **写操作前必须人工确认**（输入 `y` 才执行）
+- 每次会话写 JSONL 日志（`logs/`），并按 token 计预算（默认 20000）
 
 ---
 
@@ -29,7 +31,7 @@
 | **V1** | `src/v1_tool.py` | 单工具调用 | JSON Schema、`tools` 定义、`stop_reason=tool_use`、`tool_result` 回填 |
 | **V2** | `src/v2_repl.py` | 多轮对话 + 记忆 | 历史累积与全量重发、`/clear`、上下文成本、错误重试 |
 | **V3** | `src/v3_files.py` | 文件整理 | 沙箱与路径校验、写操作确认、dry-run、按职责拆包 |
-| **V4** | 计划中 | 多工具 + 简单规划 | 工具选择策略、日志与可观测性、成本控制 |
+| **V4** | `src/v4_assistant.py` | 多工具 + 简单规划 + 日志 + 成本控制 | 工具选择策略、system prompt 如何驱动规划、JSONL 可观测性、token 预算 |
 
 每一版的讲义在 [`docs/notes/`](docs/notes/)：
 
@@ -37,6 +39,7 @@
 - [V1：模型自己决定调工具](docs/notes/v1.md)
 - [V2：多轮对话与记忆](docs/notes/v2.md)
 - [V3：文件整理、沙箱与「人把关」](docs/notes/v3.md)
+- [V4：多工具、任务规划、日志与成本控制](docs/notes/v4.md)
 
 ---
 
@@ -75,9 +78,15 @@ uv run python src/v2_repl.py
 
 # V3：文件整理（只能操作 workspace，写操作要确认）
 uv run python src/v3_files.py
+
+# V4：多工具助手（先勘察、再计划、再执行；带日志与预算）
+uv run python src/v4_assistant.py
+
+# 可选：给 V4 换一个更小的预算，演示「预算用完就停」
+$env:MAX_SESSION_TOKENS = "800"
 ```
 
-V2 / V3 是交互式 REPL：
+V2 / V3 / V4 是交互式 REPL：
 
 ```
 你> 把 workspace 里的图片都移动到 images 目录
@@ -86,9 +95,11 @@ V2 / V3 是交互式 REPL：
 [计划] 创建目录 workspace/images
 执行? (y/N) y
 ...
-/clear   # 清空记忆
+/clear   # V2/V3 清空记忆；V4 同时重置预算
 /exit    # 退出
 ```
+
+V4 启动时还会打印本次日志路径，例如 `logs/session-20261110-115235.log`。
 
 ---
 
@@ -114,14 +125,19 @@ src/
   v1_tool.py          # V1：单工具调用
   v2_repl.py          # V2：多轮 REPL + 记忆
   v3_files.py         # V3：文件整理入口
+  v4_assistant.py     # V4：多工具 + 规划 + 日志 + 预算入口
   agent/              # V3 起抽出的公共包
     client.py         #   和模型通信（发请求、重试、解析）
-    tools.py          #   工具定义 + 实现 + 分发 + 写操作确认
+    tools.py          #   V3 的 4 个工具（V4 不改它，保留快照）
     sandbox.py        #   路径校验（只能操作 workspace）
+    tools_v4.py       #   V4 的 6 个工具 + 日志摘要
+    logger.py         #   JSONL 会话日志
+    budget.py         #   token 预算
 
 workspace/            # agent 唯一被允许改动的目录
+logs/                 # V4 的会话日志（已 gitignore）
 docs/
-  notes/              # v0.md ~ v3.md：每版讲义
+  notes/              # v0.md ~ v4.md：每版讲义
   superpowers/
     specs/            # 设计文档
     plans/            # 每版实现计划
@@ -147,16 +163,18 @@ if not target.is_relative_to(base):
 
 ### 2. 写操作确认
 
-`mkdir` / `move_file` 默认只打印计划，用户输入 `y` 才执行：
+`mkdir` / `move_file` / `write_file` 默认只打印计划，用户输入 `y` 才执行：
 
 ```python
-WRITE_TOOLS = {"mkdir", "move_file"}
+WRITE_TOOLS = WRITE_TOOLS_V3 | {"write_file"}
 
 if name in WRITE_TOOLS:
-    print(f"[计划] {describe_write(name, args)}")
+    print(f"[计划] {describe_write_v4(name, args)}")
     if input("执行? (y/N) ").strip().lower() != "y":
         return "用户拒绝了这次操作，未执行。"
 ```
+
+`write_file` 还会显示内容预览（前 40 字符），并且目标已存在时必须显式传 `overwrite=true`，否则拒绝覆盖。
 
 ### 3. 不提供 shell
 
@@ -167,6 +185,10 @@ if name in WRITE_TOOLS:
 API Key 只从 `ARK_API_KEY` 环境变量读取，`.env` 已被 `.gitignore` 忽略。
 
 > 如果这个 key 曾经出现在任何提交或公开位置，请立即去火山方舟控制台作废并重新生成。
+
+### 5. 日志不泄密
+
+V4 的日志写到 `logs/`（已 gitignore）。`user_message` 只记字符数、不记原文；`write_file` 的参数只记 `path / chars / overwrite`，不记全文。日志用于事后查「做了什么、花了多少」，不是用来存档聊天内容。
 
 ---
 
