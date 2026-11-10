@@ -4,6 +4,8 @@ __pycache__/
 .env
 workspace/*
 !workspace/.gitkeep
+logs/
+hs_err_pid*.log
 .superpowers/
 
 .idea/
