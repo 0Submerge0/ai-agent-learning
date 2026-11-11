@@ -5,6 +5,7 @@ __pycache__/
 workspace/*
 !workspace/.gitkeep
 logs/
+sessions/
 hs_err_pid*.log
 .superpowers/
 

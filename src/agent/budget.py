@@ -50,3 +50,23 @@ class Budget:
 
     def status(self) -> str:
         return f"{self.used}/{self.max_tokens} tokens（剩 {self.remaining}）"
+
+    def to_dict(self) -> dict:
+        return {
+            "max_tokens": self.max_tokens,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+        }
+
+    def restore(self, data: dict | None) -> None:
+        """从存档恢复用量。
+
+        用量一定照搬（否则恢复等于偷额度）；上限取「存档值」和「本次环境变量值」
+        中较大的那个——允许你把 MAX_SESSION_TOKENS 调大继续跑，但不允许悄悄调小。
+        """
+        data = data or {}
+        stored_max = int(data.get("max_tokens") or 0)
+        self.max_tokens = max(stored_max, self.max_tokens)
+        self.input_tokens = int(data.get("input_tokens") or 0)
+        self.output_tokens = int(data.get("output_tokens") or 0)
+        self._warned = self.used >= self.max_tokens * WARN_RATIO
