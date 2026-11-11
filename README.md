@@ -1,4 +1,4 @@
-# 从零手写一个 AI Agent（V0 → V5）
+# 从零手写一个 AI Agent（V0 → V6）
 
 一个**不用任何 agent 框架**、只用 `requests` 手写 HTTP 调用的小型 AI agent 学习项目。
 
@@ -11,7 +11,7 @@
 
 ## 它现在能做什么
 
-到 V5 为止，它是一个**会先提交计划、等你批准、再逐步执行、断了能接着做**的命令行助手：
+到 V6 为止，它是一个**会先提交计划、等你批准、再逐步执行、断了能接着做、卡住了你还能改计划**的命令行助手：
 
 - 多轮对话，记得你之前说过什么（`/clear` 可清空记忆）
 - 自己决定要不要调用工具、调哪个、传什么参数
@@ -19,9 +19,10 @@
 - **先规划、你批准、再执行**：计划是代码里的 `Plan` 对象，不是一段文字
 - 执行时逐项更新任务状态（`pending / in_progress / done / failed / skipped`）
 - **会话可存档可恢复**：`/resume` 接着上次的进度做，不用重来
+- **计划可以改**：`/skip` `/retry` `/edit` `/add` `/rm`，改完 `/go` 接着跑（V6）
 - **只能操作 `workspace/` 目录**，越界直接拒绝
 - **两道闸门**：计划审批 `y/N` + 每个写操作 `y/N`
-- 每次会话写 JSONL 日志（`logs/`），并按 token 计预算（默认 20000，V5 建议 80000）
+- 每次会话写 JSONL 日志（`logs/`），并按 token 计预算（默认 100000，可用 `MAX_SESSION_TOKENS` 覆盖）
 
 ---
 
@@ -35,6 +36,7 @@
 | **V3** | `src/v3_files.py` | 文件整理 | 沙箱与路径校验、写操作确认、dry-run、按职责拆包 |
 | **V4** | `src/v4_assistant.py` | 多工具 + 简单规划 + 日志 + 成本控制 | 工具选择策略、system prompt 如何驱动规划、JSONL 可观测性、token 预算 |
 | **V5** | `src/v5_planner.py` | 显式计划 + 计划审批 + 断点恢复 | 计划作为数据结构、阶段化工具集、两道闸门、原子存档与状态恢复 |
+| **V6** | `src/v6_control.py` | 计划可修改 + 人工接管 | 改计划的权限归属、接管点在轮次之间、保险丝软着陆、过期事实要重新告知 |
 
 每一版的讲义在 [`docs/notes/`](docs/notes/)：
 
@@ -44,6 +46,7 @@
 - [V3：文件整理、沙箱与「人把关」](docs/notes/v3.md)
 - [V4：多工具、任务规划、日志与成本控制](docs/notes/v4.md)
 - [V5：显式计划、两道闸门、断点恢复](docs/notes/v5.md)
+- [V6：计划可修改、人工接管](docs/notes/v6.md)
 
 ---
 
@@ -89,13 +92,16 @@ uv run python src/v4_assistant.py
 # V5：显式计划助手（先规划、你批准、再执行；可 /resume 接着做）
 uv run python src/v5_planner.py
 
+# V6：计划控制版（计划可改，/skip /retry /edit /add /rm，/go 接着跑）
+uv run python src/v6_control.py
+
 # 可选：给 V4 换一个更小的预算，演示「预算用完就停」
 $env:MAX_SESSION_TOKENS = "800"
 # V5 要跑两遍（规划 + 执行），实测一次完整流程约 63k tokens，建议给足
 $env:MAX_SESSION_TOKENS = "80000"
 ```
 
-V2 / V3 / V4 / V5 是交互式 REPL：
+V2 / V3 / V4 / V5 / V6 是交互式 REPL：
 
 ```
 你> 把 workspace 里的图片都移动到 images 目录
@@ -104,9 +110,11 @@ V2 / V3 / V4 / V5 是交互式 REPL：
 [计划] 创建目录 workspace/images
 执行? (y/N) y
 ...
-/clear   # V2/V3 清空记忆；V4 同时重置预算；V5 清空记忆+计划+预算（不删存档）
-/plan    # V5：查看当前计划与进度
-/resume  # V5：恢复最近一次会话存档
+/clear   # 清空记忆（V4 起同时重置预算；V5/V6 还清空计划，但不删存档）
+/plan    # V5/V6：查看当前计划与进度
+/resume  # V5/V6：恢复最近一次会话存档
+/go      # V6：按当前计划继续执行
+/skip 3  # V6：跳过任务 3（还有 /retry /edit /add /rm）
 /exit    # 退出
 ```
 
@@ -138,13 +146,14 @@ src/
   v3_files.py         # V3：文件整理入口
   v4_assistant.py     # V4：多工具 + 规划 + 日志 + 预算入口
   v5_planner.py       # V5：显式计划 + 审批 + 断点恢复入口
+  v6_control.py       # V6：计划可修改 + 人工接管入口
   agent/              # V3 起抽出的公共包
     client.py         #   和模型通信（发请求、重试、解析）
     tools.py          #   V3 的 4 个工具（V4/V5 不改它，保留快照）
     sandbox.py        #   路径校验（只能操作 workspace）
     tools_v4.py       #   V4 的 6 个工具 + 日志摘要
     tools_v5.py       #   V5：阶段化工具集（规划只读 / 执行可写）
-    plan.py           #   V5：Task / Plan 状态机
+    plan.py           #   V5：Task / Plan 状态机（V6 加了 5 个人工操作方法）
     session_store.py  #   V5：会话原子存档（供 /resume）
     logger.py         #   JSONL 会话日志
     budget.py         #   token 预算（V5 加了 to_dict/restore）
@@ -206,6 +215,8 @@ if name in WRITE_TOOLS:
 
 规划阶段发给模型的工具清单里只有 `list_dir` / `read_file` / `search_files` / `create_plan`，执行阶段才有 6 个写工具。模型自己编一个工具名也调不出来——分发函数会明确返回「规划阶段不能调用 write_file」。权限边界写在代码里，不写在提示词里。
 
+V6 起还有一条：**改计划的能力只给 REPL**。`/skip` `/retry` `/edit` `/add` `/rm` 都不在模型工具清单里，模型能改的只有任务状态（`update_task`）。你批准的是这份计划，它就只能执行这份计划。
+
 ### 4. 不提供 shell
 
 本阶段**不提供** `run_shell` 工具。沙箱的保护范围 = 你提供的工具集合；一旦能执行任意命令，应用层路径检查就不够了，需要升级到容器/虚拟机级别的隔离。
@@ -232,6 +243,7 @@ V5 的会话存档写在 `sessions/`（已 gitignore）。它**必须**保存完
 4. **错误信息是给模型看的**：工具报错返回可读文字，而不是让程序崩——模型据此自我纠正。
 5. **危险操作要有人把关**：模型可以提议，但不能单方面执行不可逆操作。
 6. **状态要落盘，不能只活在内存里**：V5 的每一步都写 `sessions/`，断了能接着做——「可恢复」不是附加功能，是长任务的必需品。
+7. **状态的改动要重新告知模型**：改了计划和预算，模型看不见，它只认对话历史（V6 的教训：过期事实会让它罢工）。
 
 ---
 
