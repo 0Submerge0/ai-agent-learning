@@ -83,6 +83,79 @@ class Plan:
         lines.append(f"进度：{self.progress_text()}")
         return "\n".join(lines)
 
+    def find(self, task_id: int) -> Task:
+        """按编号找任务，找不到就抛带总数的错——错误信息是给用户/模型看的。"""
+        task = next((t for t in self.tasks if t.id == task_id), None)
+        if task is None:
+            raise ValueError(f"没有编号为 {task_id} 的任务（共 {len(self.tasks)} 个）")
+        return task
+
+    def counts(self) -> dict[str, int]:
+        """按状态计数，用于收口时打「6 done / 1 failed」而不是笼统的「还有 1 个」。"""
+        result = {s: 0 for s in STATUSES}
+        for t in self.tasks:
+            result[t.status] = result.get(t.status, 0) + 1
+        return result
+
+    def summary(self) -> str:
+        c = self.counts()
+        return " / ".join(f"{n} {s}" for s, n in c.items() if n)
+
+    # 下面五个方法只有人能调（REPL 命令层），模型侧没有对应工具。
+
+    def skip(self, task_id: int) -> Task:
+        """人工跳过。已完成的跳过没有意义，直接报错。"""
+        task = self.find(task_id)
+        if task.status == "done":
+            raise ValueError(f"任务 {task_id} 已完成，跳过没有意义")
+        task.status = "skipped"
+        if not task.note:
+            task.note = "人工跳过"
+        self.touch()
+        return task
+
+    def retry(self, task_id: int) -> Task:
+        """人工重试：把任务打回 pending，并清掉上一次的失败备注。"""
+        task = self.find(task_id)
+        task.status = "pending"
+        task.note = ""
+        self.touch()
+        return task
+
+    def rename(self, task_id: int, title: str) -> Task:
+        task = self.find(task_id)
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("任务标题不能为空")
+        task.title = title
+        self.touch()
+        return task
+
+    def add(self, title: str) -> Task:
+        title = (title or "").strip()
+        if not title:
+            raise ValueError("任务标题不能为空")
+        if len(self.tasks) >= MAX_TASKS:
+            raise ValueError(f"计划最多 {MAX_TASKS} 个任务，先删掉一个再添加")
+        new_id = max((t.id for t in self.tasks), default=0) + 1
+        task = Task(id=new_id, title=title, status="pending", note="人工新增")
+        self.tasks.append(task)
+        self.touch()
+        return task
+
+    def remove(self, task_id: int) -> Task:
+        """删除任务并重新编号 1..N。
+
+        编号会变，因为人读的是序号（「第 3 个」），留着空洞只会让人困惑。
+        历史对话里模型可能还在说旧编号，这是这个取舍的代价。
+        """
+        task = self.find(task_id)
+        self.tasks.remove(task)
+        for i, t in enumerate(self.tasks, start=1):
+            t.id = i
+        self.touch()
+        return task
+
     def to_dict(self) -> dict:
         return {
             "goal": self.goal,

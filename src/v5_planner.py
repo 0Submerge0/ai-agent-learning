@@ -183,11 +183,30 @@ def execution_phase(
     store,
     log,
     ask=None,
+    max_iterations: int | None = None,
+    soft_landing: bool = False,
 ) -> str:
-    """按已批准的计划执行。返回结束时的阶段：done / executing。"""
-    for _ in range(EXECUTION_MAX_ITERATIONS):
+    """按已批准的计划执行。返回结束时的阶段：done / executing。
+
+    max_iterations / soft_landing 是 V6 加的可选参数：
+    不传时行为和 V5 完全一致（16 轮、硬停）。
+    """
+    limit = max_iterations or EXECUTION_MAX_ITERATIONS
+    last_cost = 0
+
+    for _ in range(limit):
         if budget.used >= budget.max_tokens:
             print("（会话预算已用完，不再调用模型。输入 /clear 重置，或 /resume 换个会话）")
+            save_session(store, goal, "executing", plan, messages, budget, log)
+            return "executing"
+
+        # 软着陆：下一轮大概还是要花这么多，不够就现在收，别把任务拦腰截断。
+        if soft_landing and last_cost and budget.remaining < last_cost:
+            print(
+                f"（剩余预算 {budget.remaining} 不够下一轮（约 {last_cost}），提前收尾；"
+                "进度已保存，可以 /go 接着做）"
+            )
+            log("soft_landing", phase="executing", remaining=budget.remaining, last_cost=last_cost)
             save_session(store, goal, "executing", plan, messages, budget, log)
             return "executing"
 
@@ -195,6 +214,7 @@ def execution_phase(
         started = time.time()
         data = call_model(messages, EXECUTION_TOOLS, execution_prompt(goal, plan))
         usage = data.get("usage") or {}
+        last_cost = int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
         log(
             "model_response",
             phase="executing",
@@ -247,7 +267,14 @@ def execution_phase(
             phase = "done"
         else:
             phase = "executing"
-            print(f"（注意：还有 {len(plan.tasks) - plan.done_count} 个任务未完成）")
+            if soft_landing:
+                # V6：分项统计比「还有 N 个未完成」有用，failed 还能直接给出下一步。
+                c = plan.counts()
+                print(f"（计划未收口：{plan.progress_text()}；{plan.summary()}）")
+                if c.get("failed"):
+                    print(f"（其中 {c['failed']} 个 failed。输入 /retry N 重试，或 /skip N 跳过）")
+            else:
+                print(f"（注意：还有 {len(plan.tasks) - plan.done_count} 个任务未完成）")
 
         save_session(store, goal, phase, plan, messages, budget, log)
         print(
@@ -256,8 +283,9 @@ def execution_phase(
         )
         return phase
 
-    print(f"（这一轮转满了 {EXECUTION_MAX_ITERATIONS} 次工具循环，计划可能还没做完）")
-    log("max_iterations", phase="executing", limit=EXECUTION_MAX_ITERATIONS)
+    hint = "；输入 /go 接着做" if soft_landing else ""
+    print(f"（这一轮转满了 {limit} 次工具循环，计划可能还没做完{hint}）")
+    log("max_iterations", phase="executing", limit=limit)
     save_session(store, goal, "executing", plan, messages, budget, log)
     return "executing"
 
